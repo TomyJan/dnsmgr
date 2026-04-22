@@ -1,0 +1,533 @@
+{extend name="common/layout" /}
+{block name="title"}批量编辑 DNS{/block}
+{block name="main"}
+<style>
+.batch-progress-list {max-height: 360px; overflow-y: auto; margin-top: 15px;}
+.batch-progress-item {display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid #f0f0f0;}
+.batch-progress-item:last-child {border-bottom:none;}
+.batch-progress-domain {font-weight:600; word-break:break-all;}
+.batch-progress-status {text-align:right; min-width: 180px;}
+.batch-lookup-box {border:1px solid #e7eaec; border-radius:4px; padding:15px 15px 8px; background:#fafafa; margin-bottom:20px;}
+.batch-lookup-actions {padding-top:0;}
+.batch-reason-group {margin-top:12px;}
+.batch-reason-group:first-child {margin-top:0;}
+</style>
+<div class="row" id="app">
+  <div class="col-xs-12 center-block" style="float:none;">
+    <div class="panel panel-default">
+      <div class="panel-heading">
+        <h3 class="panel-title"><a href="/domain" class="btn btn-sm btn-default pull-right" style="margin-top:-6px"><i class="fa fa-reply fa-fw"></i> 返回</a>批量编辑 DNS</h3>
+      </div>
+      <div class="panel-body">
+        <div class="alert alert-info">
+          <strong>说明：</strong> 这里是跨域名批量操作。先在下方输入域名，一行一个，点击“检查域名”确认系统内存在后，再执行同样的添加或修改，并实时查看进度。
+        </div>
+
+        <div class="batch-lookup-box">
+          <div class="form-horizontal">
+            <div class="form-group">
+              <label class="col-sm-3 control-label no-padding-right">域名列表</label>
+              <div class="col-sm-6">
+                <textarea class="form-control" v-model="domainInput" rows="6" placeholder="一行一个域名，例如&#10;aaa.com&#10;bbb.com"></textarea>
+                <p class="help-block" style="margin-bottom:0;">点击检查后会直接用当前域名列表做比对，只把系统中存在且当前账号可见的域名加入下面的目标列表。</p>
+              </div>
+              <div class="col-sm-3 batch-lookup-actions">
+                <button type="button" class="btn btn-primary btn-block" @click="checkDomains" :disabled="checking">{{ checking ? '检查中...' : '检查域名' }}</button>
+                <button type="button" class="btn btn-default btn-block" style="margin-top:8px;" @click="clearDomains" :disabled="checking || running">清空列表</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <form onsubmit="return false" method="post" class="form-horizontal" role="form" id="form-store">
+          <div class="form-group">
+            <label class="col-sm-3 control-label no-padding-right">操作类型</label>
+            <div class="col-sm-6">
+              <label class="radio-inline"><input type="radio" value="add" v-model="mode"> 批量添加</label>
+              <label class="radio-inline"><input type="radio" value="edit" v-model="mode"> 批量编辑</label>
+            </div>
+          </div>
+
+          <div v-if="mode === 'add'">
+            <div class="form-group">
+              <label class="col-sm-3 control-label no-padding-right">主机记录</label>
+              <div class="col-sm-6">
+                <input type="text" class="form-control" v-model="formAdd.name" placeholder="例如 @、www、api" required>
+                <p class="help-block" style="margin-bottom:0;">支持使用 <code>|</code> 一次输入多条主机记录，例如 <code>@|www|api</code>。</p>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="col-sm-3 control-label no-padding-right">记录值</label>
+              <div class="col-sm-6">
+                <input type="text" class="form-control" v-model="formAdd.value" placeholder="例如 1.2.3.4 或 cname.example.com" required>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="col-sm-3 control-label no-padding-right">记录类型</label>
+              <div class="col-sm-6">
+                <select class="form-control" v-model="formAdd.type">
+                  <option value="">A / CNAME / AAAA 自动识别</option>
+                  <option value="A">A</option>
+                  <option value="CNAME">CNAME</option>
+                  <option value="AAAA">AAAA</option>
+                  <option value="NS">NS</option>
+                  <option value="MX">MX</option>
+                  <option value="SRV">SRV</option>
+                  <option value="TXT">TXT</option>
+                  <option value="CAA">CAA</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group" v-if="existCF">
+              <label class="col-sm-3 control-label no-padding-right">开启反代</label>
+              <div class="col-sm-6">
+                <label class="radio-inline"><input type="radio" value="0" v-model="formAdd.proxy"> 否</label>
+                <label class="radio-inline"><input type="radio" value="1" v-model="formAdd.proxy"> 是（仅 Cloudflare 域名）</label>
+              </div>
+            </div>
+            <div class="form-group" v-show="showAddMx">
+              <label class="col-sm-3 control-label no-padding-right">MX 优先级</label>
+              <div class="col-sm-6">
+                <input type="text" class="form-control" v-model="formAdd.mx">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="col-sm-3 control-label no-padding-right">TTL</label>
+              <div class="col-sm-6">
+                <input type="text" class="form-control" v-model="formAdd.ttl" placeholder="默认 600" required>
+              </div>
+            </div>
+          </div>
+
+          <div v-else>
+            <div class="form-group">
+              <label class="col-sm-3 control-label no-padding-right">主机记录</label>
+              <div class="col-sm-6">
+                <input type="text" class="form-control" v-model="formEdit.name" placeholder="填写要修改的已有主机记录" required>
+                <p class="help-block" style="margin-bottom:0;">支持使用 <code>|</code> 一次输入多条主机记录，例如 <code>@|www|api</code>。</p>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="col-sm-3 control-label no-padding-right">记录类型</label>
+              <div class="col-sm-6">
+                <select class="form-control" v-model="formEdit.type">
+                  <option value="A">A</option>
+                  <option value="CNAME">CNAME</option>
+                  <option value="AAAA">AAAA</option>
+                  <option value="NS">NS</option>
+                  <option value="MX">MX</option>
+                  <option value="SRV">SRV</option>
+                  <option value="TXT">TXT</option>
+                  <option value="CAA">CAA</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="col-sm-3 control-label no-padding-right">新记录值</label>
+              <div class="col-sm-6">
+                <input type="text" class="form-control" v-model="formEdit.value" placeholder="输入新的记录值" required>
+              </div>
+            </div>
+            <div class="form-group" v-show="showEditMx">
+              <label class="col-sm-3 control-label no-padding-right">MX 优先级</label>
+              <div class="col-sm-6">
+                <input type="text" class="form-control" v-model="formEdit.mx" placeholder="留空则不修改">
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="col-sm-3 control-label no-padding-right">TTL</label>
+              <div class="col-sm-6">
+                <input type="text" class="form-control" v-model="formEdit.ttl" placeholder="留空则不修改">
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="col-sm-3 control-label no-padding-right">目标域名</label>
+            <div class="col-sm-6">
+              <p class="form-control-static">已检查到 {{domainList.length}} 个可操作域名，将按列表顺序依次执行。</p>
+            </div>
+          </div>
+          <div class="form-group">
+            <div class="col-sm-offset-3 col-sm-6">
+              <button type="button" class="btn btn-primary" @click="submit" :disabled="running">{{ mode === 'add' ? '开始批量添加' : '开始批量编辑' }}</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="panel panel-default">
+      <div class="panel-heading"><h3 class="panel-title">目标域名列表</h3></div>
+      <div class="panel-body">
+        <table class="table table-striped table-hover table-bordered">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>域名</th>
+              <th>平台</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!domainList.length">
+              <td colspan="4" class="text-center text-muted">请先输入域名并点击“检查域名”</td>
+            </tr>
+            <tr v-for="item in domainList" :key="item.id">
+              <td>{{item.id}}</td>
+              <td><a :href="'/record/' + item.id" target="_blank">{{item.name}}</a></td>
+              <td>{{item.typename || item.type || '-'}}</td>
+              <td><span class="text-green">可操作</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div v-if="lookupMissGroups.length" class="alert alert-warning" style="margin-bottom:0;">
+          <strong>以下域名未加入目标列表：</strong>
+          <div v-for="group in lookupMissGroups" :key="group.reason" class="batch-reason-group">
+            <div><strong>{{ group.reason }}</strong></div>
+            <div>{{ group.items.join('、') }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{/block}
+{block name="script"}
+<script src="/static/js/vue-2.7.16.min.js"></script>
+<script src="/static/js/layer/layer.js"></script>
+<script>
+new Vue({
+  el: '#app',
+  data: {
+    mode: '{$defaultMode|default="edit"}',
+    running: false,
+    checking: false,
+    progressLayerId: null,
+    domainInput: '',
+    domainList: [],
+    lookupMissGroups: [],
+    progressList: [],
+    formAdd: {
+      name: '',
+      value: '',
+      type: '',
+      ttl: 600,
+      mx: 10,
+      proxy: '0'
+    },
+    formEdit: {
+      id: '',
+      name: '',
+      type: 'A',
+      value: '',
+      ttl: '',
+      mx: ''
+    }
+  },
+  computed: {
+    existCF: function(){
+      return this.domainList.some(function(item){ return item.type === 'cloudflare'; });
+    },
+    showAddMx: function(){
+      return this.formAdd.type === 'MX';
+    },
+    showEditMx: function(){
+      return this.formEdit.type === 'MX';
+    }
+  },
+  mounted: function(){
+    this.resetProgress();
+  },
+  methods: {
+    parseDomainInput: function(){
+      var text = String(this.domainInput || '');
+      var lines = text.split(/\r\n|\r|\n/);
+      var list = [];
+      var seen = {};
+      for(var i = 0; i < lines.length; i++){
+        var name = $.trim(lines[i]).toLowerCase();
+        if(!name || seen[name]){
+          continue;
+        }
+        seen[name] = true;
+        list.push(name);
+      }
+      return list;
+    },
+    parseRecordNames: function(value){
+      var raw = String(value || '');
+      var parts = raw.split('|');
+      var names = [];
+      var seen = {};
+      for(var i = 0; i < parts.length; i++){
+        var name = $.trim(parts[i]);
+        if(!name || seen[name]){
+          continue;
+        }
+        seen[name] = true;
+        names.push(name);
+      }
+      return names;
+    },
+    checkDomains: function(){
+      var that = this;
+      var names = this.parseDomainInput();
+      if(!names.length){
+        layer.alert('请先输入域名，一行一个', {icon: 2});
+        return;
+      }
+      this.checking = true;
+      $.ajax({
+        type: 'POST',
+        url: '/domain/data',
+        dataType: 'json',
+        data: {
+          offset: 0,
+          limit: 10000
+        },
+        success: function(res){
+          that.checking = false;
+          if(typeof res.total === 'undefined' || !Array.isArray(res.rows)){
+            layer.alert(res.msg || '检查域名失败', {icon: 2});
+            return;
+          }
+          var allDomains = {};
+          for(var j = 0; j < res.rows.length; j++){
+            var row = res.rows[j] || {};
+            if(row.name){
+              allDomains[String(row.name).toLowerCase()] = row;
+            }
+          }
+          var exists = [];
+          var missing = [];
+          for(var i = 0; i < names.length; i++){
+            var inputName = names[i];
+            if(allDomains[inputName]){
+              exists.push(allDomains[inputName]);
+            }else{
+              missing.push(inputName);
+            }
+          }
+          that.domainList = exists;
+          that.lookupMissGroups = missing.length ? [{reason: '系统中不存在或当前账号不可见', items: missing}] : [];
+          that.resetProgress();
+          layer.msg('检查完成，可操作域名 ' + exists.length + ' 个，未加入 ' + missing.length + ' 个', {icon: exists.length ? 1 : 0, time: 1800});
+        },
+        error: function(){
+          that.checking = false;
+          layer.alert('服务器错误', {icon: 2});
+        }
+      });
+    },
+    clearDomains: function(){
+      this.domainInput = '';
+      this.domainList = [];
+      this.lookupMissGroups = [];
+      this.resetProgress();
+    },
+    resetProgress: function(){
+      var list = [];
+      var domains = this.domainList;
+      var names = this.mode === 'add' ? this.parseRecordNames(this.formAdd.name) : this.parseRecordNames(this.formEdit.name);
+      if(!names.length){
+        names = ['@'];
+      }
+      for(var i = 0; i < domains.length; i++){
+        for(var j = 0; j < names.length; j++){
+          var recordName = names[j];
+          list.push({
+            id: domains[i].id,
+            domainName: domains[i].name,
+            recordName: recordName,
+            name: this.buildDisplayHostname(recordName, domains[i].name),
+            status: 'waiting',
+            message: '等待操作'
+          });
+        }
+      }
+      this.progressList = list;
+    },
+    buildDisplayHostname: function(recordName, domainName){
+      var name = String(recordName || '').trim();
+      var domain = String(domainName || '').trim();
+      if(!name || name === '@'){
+        return domain;
+      }
+      return name + '.' + domain;
+    },
+    validateForm: function(){
+      if(!this.domainList.length){
+        layer.alert('请先检查域名并生成目标列表', {icon: 2});
+        return false;
+      }
+      if(this.mode === 'add'){
+        if(!this.parseRecordNames(this.formAdd.name).length){
+          layer.alert('请填写主机记录', {icon: 2});
+          return false;
+        }
+        if($.trim(this.formAdd.value) === ''){
+          layer.alert('请填写记录值', {icon: 2});
+          return false;
+        }
+        if($.trim(String(this.formAdd.ttl || '')) === ''){
+          layer.alert('请填写 TTL', {icon: 2});
+          return false;
+        }
+        if(this.formAdd.type === 'MX' && $.trim(String(this.formAdd.mx || '')) === ''){
+          layer.alert('请填写 MX 优先级', {icon: 2});
+          return false;
+        }
+        return true;
+      }
+      if(!this.parseRecordNames(this.formEdit.name).length){
+        layer.alert('请填写主机记录', {icon: 2});
+        return false;
+      }
+      if($.trim(this.formEdit.value) === ''){
+        layer.alert('请填写新的记录值', {icon: 2});
+        return false;
+      }
+      return true;
+    },
+    getProgressClass: function(status){
+      if(status === 'success') return 'text-green';
+      if(status === 'error') return 'text-red';
+      if(status === 'running') return 'text-yellow';
+      return 'text-muted';
+    },
+    renderProgressHtml: function(){
+      var html = '<div style="padding:15px 18px 10px;">';
+      html += '<div class="alert alert-info" style="margin-bottom:10px;">按域名顺序执行，执行过程中可实时查看状态。</div>';
+      html += '<div class="batch-progress-list">';
+      for(var i = 0; i < this.progressList.length; i++){
+        var item = this.progressList[i];
+        html += '<div class="batch-progress-item">';
+        html += '<div><div class="batch-progress-domain">' + this.htmlEscape(item.name) + '</div></div>';
+        html += '<div class="batch-progress-status ' + this.getProgressClass(item.status) + '">' + this.buildProgressMessage(item) + '</div>';
+        html += '</div>';
+      }
+      html += '</div></div>';
+      return html;
+    },
+    buildProgressMessage: function(item){
+      var text = this.htmlEscape(item.message || '-');
+      if(item.status === 'running'){
+        return '<i class="fa fa-refresh fa-spin fa-fw"></i> ' + text;
+      }
+      return text;
+    },
+    openProgressLayer: function(){
+      var that = this;
+      this.progressLayerId = layer.open({
+        type: 1,
+        title: this.mode === 'add' ? '批量添加进度' : '批量编辑进度',
+        area: ['760px', '560px'],
+        shadeClose: false,
+        content: this.renderProgressHtml(),
+        btn: ['关闭'],
+        yes: function(index){
+          if(that.running){
+            layer.msg('操作仍在进行中，请稍候', {icon: 0});
+            return;
+          }
+          layer.close(index);
+        },
+        cancel: function(){
+          return !that.running;
+        }
+      });
+    },
+    refreshProgressLayer: function(){
+      if(this.progressLayerId !== null){
+        $('#layui-layer' + this.progressLayerId + ' .layui-layer-content').html(this.renderProgressHtml());
+      }
+    },
+    updateProgress: function(index, status, message){
+      this.$set(this.progressList, index, {
+        id: this.progressList[index].id,
+        domainName: this.progressList[index].domainName,
+        recordName: this.progressList[index].recordName,
+        name: this.progressList[index].name,
+        status: status,
+        message: message
+      });
+      this.refreshProgressLayer();
+    },
+    submitAdd: function(domainId, recordName){
+      return $.ajax({
+        type: 'POST',
+        url: '/record/add/' + domainId,
+        dataType: 'json',
+        data: {
+          name: recordName,
+          type: $.trim(this.formAdd.type),
+          value: $.trim(this.formAdd.value),
+          line: '',
+          ttl: $.trim(String(this.formAdd.ttl || '600')),
+          mx: $.trim(String(this.formAdd.mx || '1')),
+          weight: 0,
+          remark: '',
+          proxy: this.formAdd.proxy
+        }
+      });
+    },
+    submitEdit: function(domainId, recordName){
+      return $.ajax({
+        type: 'POST',
+        url: '/record/batchedit',
+        dataType: 'json',
+        data: {
+          id: domainId,
+          name: recordName,
+          type: $.trim(this.formEdit.type),
+          value: $.trim(this.formEdit.value),
+          ttl: $.trim(String(this.formEdit.ttl || '')),
+          mx: $.trim(String(this.formEdit.mx || ''))
+        }
+      });
+    },
+    submit: async function(){
+      if(this.running || !this.validateForm()){
+        return;
+      }
+      this.running = true;
+      this.resetProgress();
+      this.openProgressLayer();
+      var success = 0;
+      var fail = 0;
+      for(var i = 0; i < this.progressList.length; i++){
+        var item = this.progressList[i];
+        this.updateProgress(i, 'running', this.mode === 'add' ? '添加中...' : '修改中...');
+        try{
+          var res = this.mode === 'add'
+            ? await this.submitAdd(item.id, item.recordName)
+            : await this.submitEdit(item.id, item.recordName);
+          if(res && res.code === 0){
+            success++;
+            this.updateProgress(i, 'success', (this.mode === 'add' ? '添加成功! ' : '修改成功! ') + (res.msg || ''));
+          }else{
+            fail++;
+            this.updateProgress(i, 'error', (this.mode === 'add' ? '添加失败: ' : '修改失败: ') + ((res && res.msg) ? res.msg : '未知错误'));
+          }
+        }catch(e){
+          fail++;
+          this.updateProgress(i, 'error', (this.mode === 'add' ? '添加失败: ' : '修改失败: ') + '服务器错误');
+        }
+      }
+      this.running = false;
+      layer.msg((this.mode === 'add' ? '批量添加完成，' : '批量编辑完成，') + '成功 ' + success + ' 个，失败 ' + fail + ' 个', {icon: fail ? 0 : 1, time: 1800});
+    },
+    htmlEscape: function(str){
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+  }
+});
+</script>
+{/block}
