@@ -923,7 +923,8 @@ class Domain extends BaseController
 
     public function record_batch_add2()
     {
-        return view('batchadd2');
+        View::assign('defaultMode', 'add');
+        return view('batchrecord');
     }
 
     public function record_batch_edit2()
@@ -1001,7 +1002,9 @@ class Domain extends BaseController
             }
         }
 
-        return view('batchedit');
+        $mode = input('get.mode', 'edit', 'trim');
+        View::assign('defaultMode', $mode === 'add' ? 'add' : 'edit');
+        return view('batchrecord');
     }
 
     public function record_log()
