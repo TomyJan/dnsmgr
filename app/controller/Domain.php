@@ -409,6 +409,21 @@ class Domain extends BaseController
         return [$recordLine, $minTTL];
     }
 
+    private function resolveRecordLine($line, array $recordLine, $dnstype, $proxy = false)
+    {
+        if ($line !== null && $line !== '') {
+            return $line;
+        }
+        if ($dnstype == 'cloudflare' && $proxy) {
+            return '1';
+        }
+        $defaultLine = array_key_first($recordLine);
+        if ($defaultLine !== null) {
+            return strval($defaultLine);
+        }
+        return DnsHelper::$line_name[$dnstype]['DEF'] ?? $line;
+    }
+
     public function domain_info()
     {
         $id = input('param.id/d');
@@ -567,6 +582,10 @@ class Domain extends BaseController
         if (empty($name) || empty($type) || empty($value)) {
             return json(['code' => -1, 'msg' => '参数不能为空']);
         }
+
+        $dnstype = Db::name('account')->where('id', $drow['aid'])->value('type');
+        list($recordLine) = $this->get_line_and_ttl($drow);
+        $line = $this->resolveRecordLine($line, $recordLine, $dnstype, input('post.proxy/d', 0) == 1);
 
         $dns = DnsHelper::getModel($drow['aid'], $drow['name'], $drow['thirdid']);
         $recordid = $dns->addDomainRecord($name, $type, $value, $line, $ttl, $mx, $weight, $remark);
@@ -869,12 +888,8 @@ class Domain extends BaseController
             if (empty($record) || empty($recordlist)) {
                 return json(['code' => -1, 'msg' => '参数不能为空']);
             }
-            if (is_null($line)) {
-                $line = DnsHelper::$line_name[$dnstype]['DEF'];
-                if ($dnstype == 'cloudflare' && input('post.proxy/d', 0) == 1) {
-                    $line = '1';
-                }
-            }
+            list($recordLine) = $this->get_line_and_ttl($drow);
+            $line = $this->resolveRecordLine($line, $recordLine, $dnstype, input('post.proxy/d', 0) == 1);
 
             $dns = DnsHelper::getModel($drow['aid'], $drow['name'], $drow['thirdid']);
 
@@ -946,7 +961,8 @@ class Domain extends BaseController
             if (empty($name) || empty($type) || empty($value)) {
                 return json(['code' => -1, 'msg' => '必填参数不能为空']);
             }
-            $line = DnsHelper::$line_name[$dnstype]['DEF'];
+            list($recordLine) = $this->get_line_and_ttl($drow);
+            $line = $this->resolveRecordLine(null, $recordLine, $dnstype);
 
             $dns = DnsHelper::getModel($drow['aid'], $drow['name'], $drow['thirdid']);
             $domainRecords = $dns->getSubDomainRecords($name, 1, 100);
